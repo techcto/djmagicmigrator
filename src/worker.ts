@@ -20,6 +20,9 @@ new Worker("site-migrations", async (queued) => {
       if (current?.status === "cancelled") throw new Error("Migration was cancelled");
       await update({ progress: Math.min(65, Math.max(1, Math.floor((count / job.maxPages) * 65))) });
     });
+    if (job.options.pageMappings && manifest.failures.length > 0 && !job.options.allowPartial) {
+      throw new Error(`Approved migration crawl failed for ${manifest.failures.length} page(s); no CMS import was started.`);
+    }
     await update({ status: "importing", progress: 70 });
     const credential = await destinationCredential(job.destination.secretArn);
     const result = await adapterFor(job.destination.platform).import(manifest, {

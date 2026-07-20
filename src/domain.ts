@@ -7,6 +7,12 @@ export const destinationSchema = z.object({
   secretArn: z.string().min(1).optional(),
 });
 
+export const pageMappingSchema = z.object({
+  sourceUrl: z.string().url(),
+  destinationPath: z.string().min(1),
+  title: z.string().optional(),
+});
+
 export const createJobSchema = z.object({
   sourceUrl: z.string().url(),
   targetName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -18,7 +24,9 @@ export const createJobSchema = z.object({
     includeImages: z.boolean().default(true),
     includeScriptsAndStyles: z.boolean().default(true),
     publish: z.boolean().default(false),
+    allowPartial: z.boolean().default(false),
     referenceTemplateUrl: z.string().url().optional(),
+    pageMappings: z.array(pageMappingSchema).min(1).max(10000).optional(),
   }).default({}),
 });
 
@@ -34,11 +42,18 @@ export interface MigrationPage {
   links: string[];
 }
 
+export interface MigrationFailure {
+  sourceUrl: string;
+  error: string;
+}
+
 export interface MigrationManifest {
   version: "1.0";
   sourceUrl: string;
   generatedAt: string;
   pages: MigrationPage[];
+  linkMap: Record<string, string>;
+  failures: MigrationFailure[];
 }
 
 export interface MigrationJob extends CreateJobInput {
