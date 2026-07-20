@@ -20,8 +20,8 @@ For local Docker development, use `http://host.docker.internal` as the CMS base 
 
 ```json
 {
-  "sourceUrl": "https://alachuacounty.us",
-  "targetName": "alachua-county-migrator-test",
+  "sourceUrl": "https://example.com",
+  "targetName": "example-site-import",
   "maxPages": 10,
   "destination": {
     "platform": "cms",
@@ -30,7 +30,7 @@ For local Docker development, use `http://host.docker.internal` as the CMS base 
     "secretArn": "arn:aws:secretsmanager:...:secret:cms-api-token"
   },
   "options": {
-    "referenceTemplateUrl": "https://origin-alachua.solodev.net"
+    "referenceTemplateUrl": "https://reference.example.com"
   }
 }
 ```
