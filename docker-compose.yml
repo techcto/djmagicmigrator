@@ -1,0 +1,39 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: devops/docker/Dockerfile.api
+    environment:
+      PORT: 3001
+      DJMAGIC_API_KEYS: ${DJMAGIC_API_KEYS:-local-development-key}
+      DJMAGIC_REDIS_HOST: redis
+      DJMAGIC_DESTINATION_TOKEN: ${DJMAGIC_DESTINATION_TOKEN:-}
+      DJMAGIC_ALLOWED_SOURCE_HOSTS: ${DJMAGIC_ALLOWED_SOURCE_HOSTS:-}
+      DJMAGIC_ALLOWED_DESTINATION_HOSTS: ${DJMAGIC_ALLOWED_DESTINATION_HOSTS:-host.docker.internal}
+    ports: ["3001:3001"]
+    depends_on:
+      redis:
+        condition: service_healthy
+  worker:
+    build:
+      context: .
+      dockerfile: devops/docker/Dockerfile.worker
+    environment:
+      DJMAGIC_REDIS_HOST: redis
+      DJMAGIC_DESTINATION_TOKEN: ${DJMAGIC_DESTINATION_TOKEN:-}
+      DJMAGIC_ALLOWED_SOURCE_HOSTS: ${DJMAGIC_ALLOWED_SOURCE_HOSTS:-}
+      DJMAGIC_ALLOWED_DESTINATION_HOSTS: ${DJMAGIC_ALLOWED_DESTINATION_HOSTS:-host.docker.internal}
+    depends_on:
+      redis:
+        condition: service_healthy
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: ["migrator-redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  migrator-redis:

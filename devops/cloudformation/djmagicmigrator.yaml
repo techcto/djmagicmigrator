@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: DJ Magic Migrator API and asynchronous worker on ECS Fargate.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Network }
+        Parameters: [VpcId, PublicSubnets, ServiceSubnets, CertificateArn]
+      - Label: { default: Migrator }
+        Parameters: [EnvironmentName, ApiImage, WorkerImage, ApiKeys, DestinationSecretArn, AllowedSourceHosts, AllowedDestinationHosts, DesiredCount]
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: djmagicmigrator
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  ServiceSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  CertificateArn:
+    Type: String
+    Default: ''
+  ApiImage:
+    Type: String
+    Description: ECR image URI for the migrator API.
+  WorkerImage:
+    Type: String
+    Description: ECR image URI for the migrator worker.
+  ApiKeys:
+    Type: String
+    NoEcho: true
+    Description: Comma-separated bearer keys accepted by the migrator API and MCP server.
+  DestinationSecretArn:
+    Type: String
+    Description: Secrets Manager ARN containing the CMS bearer API token.
+  AllowedSourceHosts:
+    Type: String
+    Default: ''
+    Description: Optional comma-separated source crawl allowlist.
+  AllowedDestinationHosts:
+    Type: String
+    Description: Comma-separated CMS destination hostname allowlist.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  RedisNodeType:
+    Type: String
+    Default: cache.t4g.micro
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref EnvironmentName
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public access to the migrator API.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Migrator API and worker tasks.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Migrator Redis queue.
+      VpcId: !Ref VpcId
+
+  RedisIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref ServiceSecurityGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnets
+      SecurityGroups: [!Ref AlbSecurityGroup]
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-api'
+      Port: 3001
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /api/health
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+          - Type: forward
+            TargetGroupArn: !Ref ApiTargetGroup
+
+  HttpsListener:
+    Condition: HasCertificate
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Migrator queue subnets.
+      SubnetIds: !Ref ServiceSubnets
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupDescription: !Sub '${EnvironmentName} migration queue'
+      Engine: redis
+      CacheNodeType: !Ref RedisNodeType
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      AtRestEncryptionEnabled: true
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds: [!Ref RedisSecurityGroup]
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${EnvironmentName}-jobs'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: migrator-jobs-and-destination-token
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+                Resource: !GetAtt JobsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DestinationSecretArn
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/ecs/${EnvironmentName}/api', RetentionInDays: 30 }
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/ecs/${EnvironmentName}/worker', RetentionInDays: 30 }
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvironmentName}-api'
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ApiImage
+          Essential: true
+          PortMappings: [{ ContainerPort: 3001, Protocol: tcp }]
+          Environment:
+            - { Name: PORT, Value: '3001' }
+            - { Name: DJMAGIC_API_KEYS, Value: !Ref ApiKeys }
+            - { Name: DJMAGIC_JOBS_TABLE, Value: !Ref JobsTable }
+            - { Name: DJMAGIC_REDIS_HOST, Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address }
+            - { Name: DJMAGIC_REDIS_PORT, Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Port }
+            - { Name: DJMAGIC_ALLOWED_SOURCE_HOSTS, Value: !Ref AllowedSourceHosts }
+            - { Name: DJMAGIC_ALLOWED_DESTINATION_HOSTS, Value: !Ref AllowedDestinationHosts }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: api
+
+  WorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvironmentName}-worker'
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: worker
+          Image: !Ref WorkerImage
+          Essential: true
+          Environment:
+            - { Name: DJMAGIC_JOBS_TABLE, Value: !Ref JobsTable }
+            - { Name: DJMAGIC_REDIS_HOST, Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address }
+            - { Name: DJMAGIC_REDIS_PORT, Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Port }
+            - { Name: DJMAGIC_DESTINATION_SECRET_ARN, Value: !Ref DestinationSecretArn }
+            - { Name: DJMAGIC_ALLOWED_SOURCE_HOSTS, Value: !Ref AllowedSourceHosts }
+            - { Name: DJMAGIC_ALLOWED_DESTINATION_HOSTS, Value: !Ref AllowedDestinationHosts }
+            - { Name: DJMAGIC_WORKER_CONCURRENCY, Value: '1' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: worker
+
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: !Sub '${EnvironmentName}-api'
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: !Ref ServiceSubnets
+      LoadBalancers:
+        - { ContainerName: api, ContainerPort: 3001, TargetGroupArn: !Ref ApiTargetGroup }
+
+  WorkerService:
+    Type: AWS::ECS::Service
+    DependsOn: RedisReplicationGroup
+    Properties:
+      ServiceName: !Sub '${EnvironmentName}-worker'
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref WorkerTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: !Ref ServiceSubnets
+
+Outputs:
+  ApiBaseUrl:
+    Value: !If [HasCertificate, !Sub 'https://${LoadBalancer.DNSName}', !Sub 'http://${LoadBalancer.DNSName}']
+  McpUrl:
+    Value: !If [HasCertificate, !Sub 'https://${LoadBalancer.DNSName}/mcp', !Sub 'http://${LoadBalancer.DNSName}/mcp']
+  ClusterName:
+    Value: !Ref Cluster
