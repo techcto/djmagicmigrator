@@ -49,15 +49,19 @@ app.post("/mcp", authenticate, async (request, response) => {
   try {
     if (method === "tools/list") return response.json({ jsonrpc: "2.0", id, result: { tools: [
       { name: "start-site-import", description: "Start a bounded CMS website migration.", inputSchema: { type: "object", properties: { sourceUrl: { type: "string", format: "uri" }, targetName: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }, maxPages: { type: "integer", minimum: 1, maximum: 10000 }, destination: { type: "object" }, options: { type: "object" } }, required: ["sourceUrl", "targetName", "destination"] } },
-      { name: "get-site-import", description: "Read migration progress and its final result.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
-      { name: "cancel-site-import", description: "Cancel a queued migration.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      { name: "start-sharepoint-module-import", description: "Discover a SharePoint list or document library and upsert it through the CMS module manifest workflow.", inputSchema: { type: "object", properties: { kind: { const: "sharepoint-module" }, source: { type: "object" }, destination: { type: "object" }, module: { type: "object" }, options: { type: "object" } }, required: ["kind", "source", "destination", "module"] } },
+      { name: "get-import-job", description: "Read migration progress and its final result.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      { name: "cancel-import-job", description: "Cancel a queued migration.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      { name: "get-site-import", description: "Compatibility alias for get-import-job.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      { name: "cancel-site-import", description: "Compatibility alias for cancel-import-job.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
     ] } });
     if (method !== "tools/call") throw new Error("Unsupported MCP method");
     const name = params?.name; const args = params?.arguments || {};
     let result: unknown;
-    if (name === "start-site-import") result = await startJob(args);
-    else if (name === "get-site-import") result = await getJob(String(args.id));
-    else if (name === "cancel-site-import") {
+    if (name === "start-site-import") result = await startJob({ ...args, kind: "site" });
+    else if (name === "start-sharepoint-module-import") result = await startJob({ ...args, kind: "sharepoint-module" });
+    else if (name === "get-site-import" || name === "get-import-job") result = await getJob(String(args.id));
+    else if (name === "cancel-site-import" || name === "cancel-import-job") {
       const job = await getJob(String(args.id)); if (!job) throw new Error("Not found");
       job.status = "cancelled"; job.updatedAt = new Date().toISOString(); await putJob(job); result = job;
     } else throw new Error("Unknown tool");

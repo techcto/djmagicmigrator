@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import type { CreateJobInput, MigrationManifest, MigrationPage } from "./domain.js";
+import type { MigrationManifest, MigrationPage, SiteJobInput } from "./domain.js";
 import { assertSourceUrl } from "./security.js";
 
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -41,7 +41,7 @@ function extensionOf(url: string): string {
   } catch { return ""; }
 }
 
-function sourceAssets($: cheerio.CheerioAPI, pageUrl: URL, input: CreateJobInput): string[] {
+function sourceAssets($: cheerio.CheerioAPI, pageUrl: URL, input: SiteJobInput): string[] {
   const assets = new Set<string>();
   const add = (raw: string | undefined, kind: "image" | "document" | "media" | "script-style") => {
     const resolved = raw ? resolveReference(raw, pageUrl) : undefined;
@@ -72,7 +72,7 @@ function sourceAssets($: cheerio.CheerioAPI, pageUrl: URL, input: CreateJobInput
   return [...assets];
 }
 
-export async function crawl(input: CreateJobInput, onProgress: (count: number) => Promise<void>): Promise<MigrationManifest> {
+export async function crawl(input: SiteJobInput, onProgress: (count: number) => Promise<void>): Promise<MigrationManifest> {
   const start = assertSourceUrl(input.sourceUrl);
   const mappings = input.options.pageMappings || [];
   const approvedPaths = new Map<string, { destinationPath: string; title?: string }>();

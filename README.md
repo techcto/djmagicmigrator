@@ -63,3 +63,8 @@ The manifest remains version `1.0` for compatibility and also carries a complete
 ## AI skill contract
 
 AI decides the source, target, bounds, and exception policy. It starts and monitors a migration through Migrator MCP. The crawler remains deterministic; the model does not create thousands of files one call at a time. Future skills can use the same pattern for page/form creation, analytics audits, accessibility checks, and content reporting.
+
+## Guides
+
+- [SharePoint module import implementation runbook](docs/sharepoint-module-imports.md)
+- [SharePoint module migration blog draft](docs/sharepoint-module-blog-draft.md)

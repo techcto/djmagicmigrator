@@ -7,7 +7,7 @@
     "build": "node node_modules/typescript/bin/tsc -p tsconfig.json",
     "start:api": "node dist/api.js",
     "start:worker": "node dist/worker.js",
-    "test": "npm run build"
+    "test": "npm run build && node --test dist/*.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.848.0",

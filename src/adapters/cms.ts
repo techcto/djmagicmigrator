@@ -7,4 +7,10 @@ export const cmsAdapter: DestinationAdapter = {
     target_name: context.targetName,
     reference_template_url: context.referenceTemplateUrl,
   }),
+  importModule: (manifest, context) => callDestination(
+    context,
+    "/api/v2/module-imports",
+    "import-module-manifest",
+    { manifest },
+  ),
 };
